@@ -53,6 +53,12 @@ cd ../v1_v1.5/model_inference/gpt-realtime
 npm install
 ```
 
+The fd-badcat WebSocket adapter uses one Python dependency:
+
+```bash
+uv sync --group fd-badcat
+```
+
 ## 1. Validate a released dataset split
 
 From `vi_fdb_harness/`:
@@ -104,7 +110,35 @@ uv run python harness.py validate-run \
   --run-root ../outputs/vi_fdb_v1_0/gpt_realtime
 ```
 
-## 3. Vietnamese ASR and observable speech boundaries
+## 3. Run fd-badcat on A100
+
+Start the fd-badcat server first from its `a100-minicpm-vieneu-zipformer`
+branch. Then run the same Vi-FDB dataset through the local WebSocket adapter:
+
+```bash
+uv run python harness.py run-fd-badcat \
+  --dataset-root /path/to/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/vi_fdb_v1_0/fd_badcat_a100 \
+  --ws-url ws://127.0.0.1:18000/realtime \
+  --condition both --jobs 1 --limit 1
+```
+
+The adapter sends 16 ms float32 frames at realtime speed, adds trailing silence
+so fd-badcat can finalize VAD, and only then closes the session. It accepts both
+the legacy WAV response and fd-badcat's PCM16 streaming response. It writes the
+standard `output.wav`/`output_timing.json` and paired clean artifacts under the
+same result folders used by `validate-run`, `transcribe.py`, `judge.py`, and
+`report.py`.
+
+Run the full split after the smoke test:
+
+```bash
+uv run python harness.py validate-run \
+  --dataset-root /path/to/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/vi_fdb_v1_0/fd_badcat_a100
+```
+
+## 4. Vietnamese ASR and observable speech boundaries
 
 Generate word-level Vietnamese transcripts with PhoWhisper:
 
@@ -150,7 +184,7 @@ Every ASR backend writes the same normalized schema:
 }
 ```
 
-## 4. Blinded behavior judge
+## 5. Blinded behavior judge
 
 The judge sees the task, source text/event interval, and timestamped clean/event assistant transcripts. Dialogue-manager action tokens are not part of benchmark scoring. Internal API cancellation events are diagnostic only; the judge scores observable behavior.
 
@@ -163,7 +197,7 @@ uv run python judge.py \
 
 Cases below 0.7 judge confidence and ASR-disagreement cases require human review.
 
-## 5. Synchronized review report
+## 6. Synchronized review report
 
 ```bash
 uv run python report.py \

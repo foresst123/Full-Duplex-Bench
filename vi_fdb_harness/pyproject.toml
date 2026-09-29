@@ -5,6 +5,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [dependency-groups]
+fd-badcat = ["websockets>=12"]
 asr = [
   "accelerate>=0.26",
   "chunkformer",
