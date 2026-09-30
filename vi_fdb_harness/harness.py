@@ -305,6 +305,28 @@ def main() -> None:
     run.add_argument("--jobs", type=int, default=4)
     run.add_argument("--limit", type=int)
     run.add_argument("--overwrite", action="store_true")
+    fd = sub.add_parser(
+        "run-fd-badcat",
+        help="Run a local fd-badcat WebSocket server against Vi-FDB.",
+    )
+    fd.add_argument("--dataset-root", type=Path, required=True)
+    fd.add_argument("--run-root", type=Path, required=True)
+    fd.add_argument(
+        "--ws-url",
+        default=os.getenv("FDB_WS_URL", "ws://127.0.0.1:18000/realtime"),
+    )
+    fd.add_argument("--condition", choices=["event", "clean", "both"], default="both")
+    fd.add_argument("--limit", type=int)
+    fd.add_argument("--overwrite", action="store_true")
+    fd.add_argument("--tail-seconds", type=float, default=3.0)
+    fd.add_argument("--close-grace-seconds", type=float, default=2.0)
+    fd.add_argument("--exp-name", default="vi_fdb")
+    fd.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Kept at 1 so one WebSocket session owns one monotonic clock.",
+    )
     check = sub.add_parser("validate-run")
     check.add_argument("--dataset-root", type=Path, required=True)
     check.add_argument("--run-root", type=Path, required=True)
@@ -321,6 +343,11 @@ def main() -> None:
         raise SystemExit(0 if result["ok"] else 1)
     if args.command == "run-openai":
         raise SystemExit(run_openai(args))
+    if args.command == "run-fd-badcat":
+        if args.jobs != 1:
+            parser.error("run-fd-badcat requires --jobs 1 to preserve realtime timing")
+        from run_fd_badcat import run_fd_badcat
+        raise SystemExit(run_fd_badcat(args))
     result = validate_run(args.dataset_root, args.run_root, not args.allow_partial)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     raise SystemExit(0 if result["ok"] else 1)

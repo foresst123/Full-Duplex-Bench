@@ -53,6 +53,12 @@ cd ../v1_v1.5/model_inference/gpt-realtime
 npm install
 ```
 
+The fd-badcat WebSocket adapter uses one Python dependency:
+
+```bash
+uv sync --group fd-badcat
+```
+
 ## 1. Validate a released dataset split
 
 From `vi_fdb_harness/`:
@@ -104,7 +110,156 @@ uv run python harness.py validate-run \
   --run-root ../outputs/vi_fdb_v1_0/gpt_realtime
 ```
 
-## 3. Vietnamese ASR and observable speech boundaries
+## 3. Run fd-badcat on A100
+
+Start the fd-badcat server first from its `a100-minicpm-vieneu-zipformer`
+branch. Then run the same Vi-FDB dataset through the local WebSocket adapter:
+
+```bash
+uv run python harness.py run-fd-badcat \
+  --dataset-root /path/to/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/vi_fdb_v1_0/fd_badcat_a100 \
+  --ws-url ws://127.0.0.1:18000/realtime \
+  --condition both --jobs 1 --limit 1
+```
+
+The adapter sends 16 ms float32 frames at realtime speed, adds trailing silence
+so fd-badcat can finalize VAD, and only then closes the session. It accepts both
+the legacy WAV response and fd-badcat's PCM16 streaming response. It writes the
+standard `output.wav`/`output_timing.json` and paired clean artifacts under the
+same result folders used by `validate-run`, `transcribe.py`, `judge.py`, and
+`report.py`.
+
+Run the full split after the smoke test:
+
+```bash
+uv run python harness.py validate-run \
+  --dataset-root /path/to/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/vi_fdb_v1_0/fd_badcat_a100
+```
+
+### Complete two-A100 command checklist
+
+Use this exact order when running the benchmark against the fd-badcat branch.
+
+Terminal 1 — prepare fd-badcat and its Python environment:
+
+```bash
+git clone https://github.com/foresst123/fd-badcat.git
+cd fd-badcat
+git switch --track origin/a100-minicpm-vieneu-zipformer
+conda create -n fd-badcat-a100 python=3.10 -y
+conda activate fd-badcat-a100
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+cp .env.a100.example .env.a100
+set -a && source .env.a100 && set +a
+```
+
+Terminal 2 — start VieNeu on physical GPU 1:
+
+```bash
+cd /path/to/VieNeu-TTS
+CUDA_VISIBLE_DEVICES=1 \
+VIENEU_DEVICE=cuda \
+VIENEU_PORT=19100 \
+.venv/bin/python -m apps.openai_speech
+curl http://127.0.0.1:19100/health
+```
+
+Terminal 3 — start MiniCPM/Zipformer/fd-badcat on GPUs 0 and 1:
+
+```bash
+cd /path/to/fd-badcat
+conda activate fd-badcat-a100
+set -a && source .env.a100 && set +a
+python setup/a100_minicpm_server.py
+```
+
+Terminal 4 — prepare this harness and download the public dataset:
+
+```bash
+git clone https://github.com/foresst123/Full-Duplex-Bench.git
+cd Full-Duplex-Bench
+git switch --track origin/fd-badcat-a100-adapter
+cd vi_fdb_harness
+uv sync --group fd-badcat
+hf download tuanamz/vi-fdb-v1 \
+  --repo-type dataset \
+  --local-dir ../data/vi-fdb-v1
+```
+
+Validate both dataset splits before inference:
+
+```bash
+uv run python harness.py validate-dataset \
+  --dataset-root ../data/vi-fdb-v1/data/pilot_160 \
+  --profile original-160
+
+uv run python harness.py validate-dataset \
+  --dataset-root ../data/vi-fdb-v1/data/expansion_240 \
+  --profile expansion-240
+```
+
+Run one event/clean pair first:
+
+```bash
+uv run python harness.py run-fd-badcat \
+  --dataset-root ../data/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/fd_badcat_a100_pilot \
+  --ws-url ws://127.0.0.1:18000/realtime \
+  --condition both --jobs 1 --limit 1
+
+uv run python harness.py validate-run \
+  --dataset-root ../data/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/fd_badcat_a100_pilot
+```
+
+Run the complete pilot, then the expansion split:
+
+```bash
+uv run python harness.py run-fd-badcat \
+  --dataset-root ../data/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/fd_badcat_a100_pilot \
+  --ws-url ws://127.0.0.1:18000/realtime \
+  --condition both --jobs 1
+
+uv run python harness.py run-fd-badcat \
+  --dataset-root ../data/vi-fdb-v1/data/expansion_240 \
+  --run-root ../outputs/fd_badcat_a100_expansion \
+  --ws-url ws://127.0.0.1:18000/realtime \
+  --condition event --jobs 1
+```
+
+Validate outputs and run the post-processing pipeline:
+
+```bash
+uv run python harness.py validate-run \
+  --dataset-root ../data/vi-fdb-v1/data/pilot_160 \
+  --run-root ../outputs/fd_badcat_a100_pilot
+
+uv sync --group asr
+uv run python transcribe.py \
+  --root ../outputs/fd_badcat_a100_pilot \
+  --backend phowhisper
+uv run python align_phowhisper_vad.py \
+  --root ../outputs/fd_badcat_a100_pilot
+
+uv sync --group judge
+export OPENAI_API_KEY=your_key_here
+uv run python judge.py \
+  --root ../outputs/fd_badcat_a100_pilot \
+  --asr-backend phowhisper_vad
+uv run python report.py \
+  --run-root ../outputs/fd_badcat_a100_pilot \
+  --asr-backend phowhisper_vad
+```
+
+Keep `--jobs 1`: one fd-badcat WebSocket session owns one realtime clock and
+the A100 model/provider stack is intentionally single-session. Add
+`--overwrite` only when deliberately regenerating completed samples.
+
+## 4. Vietnamese ASR and observable speech boundaries
 
 Generate word-level Vietnamese transcripts with PhoWhisper:
 
@@ -150,7 +305,7 @@ Every ASR backend writes the same normalized schema:
 }
 ```
 
-## 4. Blinded behavior judge
+## 5. Blinded behavior judge
 
 The judge sees the task, source text/event interval, and timestamped clean/event assistant transcripts. Dialogue-manager action tokens are not part of benchmark scoring. Internal API cancellation events are diagnostic only; the judge scores observable behavior.
 
@@ -163,7 +318,7 @@ uv run python judge.py \
 
 Cases below 0.7 judge confidence and ASR-disagreement cases require human review.
 
-## 5. Synchronized review report
+## 6. Synchronized review report
 
 ```bash
 uv run python report.py \
